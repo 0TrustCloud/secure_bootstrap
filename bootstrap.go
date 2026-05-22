@@ -1,3 +1,8 @@
+Here is the full, un-truncated, and corrected `secure_bootstrap/bootstrap.go` file.
+
+I have fully integrated the `loginInterceptor` spy so that it properly intercepts `webauthnext`'s `FinishLogin` response, sets your session cookie, and kicks off the DBSC mesh connection seamlessly.
+
+```go
 package secure_bootstrap
 
 import (
@@ -119,6 +124,38 @@ func GenerateDynamicGML(cfg UIConfig) string {
 	return sb.String()
 }
 
+// loginInterceptor wraps the ResponseWriter to safely detect webauthnext's success state
+type loginInterceptor struct {
+	http.ResponseWriter
+	status   int
+	username string
+}
+
+func (i *loginInterceptor) WriteHeader(code int) {
+	if i.status == 0 {
+		i.status = code
+		// If webauthnext approves the passkey, inject our session cookie BEFORE headers flush
+		if code == http.StatusOK {
+			http.SetCookie(i.ResponseWriter, &http.Cookie{
+				Name:     "session_id",
+				Value:    "user_session_" + i.username,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   true,
+				SameSite: http.SameSiteStrictMode,
+			})
+		}
+		i.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (i *loginInterceptor) Write(b []byte) (int, error) {
+	if i.status == 0 {
+		i.WriteHeader(http.StatusOK)
+	}
+	return i.ResponseWriter.Write(b)
+}
+
 // BootstrapAuth binds the dynamic identity provider directly to the router and triggers DBSC on success
 func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, meshNode *secure_network.MeshNode, gatewayAddr string) {
 	// Route 1: Render dynamic UI
@@ -156,37 +193,25 @@ func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, mesh
 			return
 		}
 
-		// 1. Validate the hardware passkey assertion via webauthnext
-		_, err := wa.FinishLogin(username, r)
-		if err != nil {
-			log.Printf("[AUTH] Passkey verification failed for %s: %v", username, err)
-			http.Error(w, "Invalid passkey assertion", http.StatusUnauthorized)
-			return
+		// 1. Wrap the ResponseWriter with our Spy interceptor
+		interceptor := &loginInterceptor{ResponseWriter: w, username: username}
+
+		// 2. Let webauthnext validate the payload and write to our interceptor
+		wa.FinishLogin(interceptor, r)
+
+		// 3. If the interceptor caught a 200 OK, the passkey was valid! Trigger the mesh.
+		if interceptor.status == http.StatusOK {
+			log.Printf("[AUTH] User '%s' verified. Initializing secure overlay tunnel...", username)
+			go func() {
+				if err := meshNode.Connect(gatewayAddr); err != nil {
+					log.Printf("[SECURE_MESH] ❌ DBSC Auto-Connect Failed for user %s: %v", username, err)
+					return
+				}
+				log.Printf("[SECURE_MESH] ✅ DBSC Secure Tunnel Established successfully for user %s", username)
+			}()
+		} else {
+			log.Printf("[AUTH] Passkey verification failed for %s", username)
 		}
-
-		// 2. Establish the secure session cookie
-		cookieValue := "user_session_" + username
-		http.SetCookie(w, &http.Cookie{
-			Name:     "session_id",
-			Value:    cookieValue,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteStrictMode,
-		})
-
-		// 3. TRIGGER DBSC MESH JOIN IMMEDIATELY
-		log.Printf("[AUTH] User '%s' verified. Initializing secure overlay tunnel...", username)
-		go func() {
-			if err := meshNode.Connect(gatewayAddr); err != nil {
-				log.Printf("[SECURE_MESH] ❌ DBSC Auto-Connect Failed for user %s: %v", username, err)
-				return
-			}
-			log.Printf("[SECURE_MESH] ✅ DBSC Secure Tunnel Established successfully for user %s", username)
-		}()
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"success"}`))
 	})
 }
 
@@ -214,3 +239,5 @@ func RequireAuth(router *secure_network.Router, next func(c *guikit.Context)) fu
 		next(c)
 	}
 }
+
+```
