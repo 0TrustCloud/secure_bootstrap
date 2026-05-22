@@ -1,8 +1,3 @@
-Here is the full, un-truncated, and corrected `secure_bootstrap/bootstrap.go` file.
-
-I have fully integrated the `loginInterceptor` spy so that it properly intercepts `webauthnext`'s `FinishLogin` response, sets your session cookie, and kicks off the DBSC mesh connection seamlessly.
-
-```go
 package secure_bootstrap
 
 import (
@@ -239,5 +234,3 @@ func RequireAuth(router *secure_network.Router, next func(c *guikit.Context)) fu
 		next(c)
 	}
 }
-
-```
