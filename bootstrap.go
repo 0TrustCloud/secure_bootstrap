@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gddisney/guikit"
@@ -21,7 +22,6 @@ const (
 
 // --- Dynamic UI Configuration ---
 
-// UIConfig drives the completely dynamic Auth0-style rendering
 type UIConfig struct {
 	BrandName    string     `json:"brand_name"`
 	Logo         string     `json:"logo"`
@@ -43,17 +43,16 @@ type UIButton struct {
 	Label   string `json:"label"`
 	Primary bool   `json:"primary"`
 	Type    string `json:"type"`
-	OnClick string `json:"onclick"` // Completely dynamic JS bindings
+	OnClick string `json:"onclick"`
 }
 
-// DefaultConfig provides a safe fallback matching your original GML
 func DefaultConfig() UIConfig {
 	return UIConfig{
 		BrandName:    "Wiliwala",
 		Logo:         "🌐",
 		PrimaryColor: "#1d9bf0",
 		Description:  "Authenticate securely using your device's native Passkey. No passwords required.",
-		FormAction:   "/auth/dev",
+		FormAction:   "/auth/login",
 		Fields: []UIField{
 			{ID: "username", Name: "username", Type: "text", Placeholder: "Enter a Username"},
 		},
@@ -64,11 +63,9 @@ func DefaultConfig() UIConfig {
 	}
 }
 
-// GenerateDynamicGML compiles the UIConfig into the raw GML syntax string expected by GUIKit.
 func GenerateDynamicGML(cfg UIConfig) string {
 	var sb strings.Builder
 
-	// Build Core Wrapper and Styles
 	sb.WriteString(fmt.Sprintf(`html(
     head(
         meta:charset."utf-8"(),
@@ -96,13 +93,11 @@ func GenerateDynamicGML(cfg UIConfig) string {
                 form:method."POST":action."%s"(`,
 		cfg.BrandName, cfg.PrimaryColor, cfg.Logo, cfg.BrandName, cfg.Description, cfg.FormAction))
 
-	// Inject Dynamic Input Fields
 	for _, field := range cfg.Fields {
 		sb.WriteString(fmt.Sprintf("\n                    input.auth-input:id.\"%s\":name.\"%s\":type.\"%s\":placeholder.\"%s\"(),",
 			field.ID, field.Name, field.Type, field.Placeholder))
 	}
 
-	// Inject Dynamic Buttons and JS execution contexts
 	for _, btn := range cfg.Buttons {
 		btnClass := ".btn-secondary"
 		if btn.Primary {
@@ -118,7 +113,6 @@ func GenerateDynamicGML(cfg UIConfig) string {
 			btnClass, btn.Type, onclickStr, btn.Label))
 	}
 
-	// Close Layout
 	sb.WriteString(`
                 )
             )
@@ -131,13 +125,10 @@ func GenerateDynamicGML(cfg UIConfig) string {
 
 // --- Core Bootstrap & Routing ---
 
-// BootstrapAuth binds the dynamic identity provider directly to the router
 func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider) {
 
-	// 1. Dynamic UI Render Route (The Auth0-like Entrypoint)
 	router.Mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
 		
-		// Pull Configuration
 		txn := router.DB.BeginTxn()
 		cfgBytes, err := router.DB.Read(ConfigPageID, txn, []byte("ui_settings"))
 		router.DB.CommitTxn(txn)
@@ -145,29 +136,25 @@ func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider) {
 		cfg := DefaultConfig()
 		if err == nil && len(cfgBytes) > 0 {
 			if parseErr := json.Unmarshal(cfgBytes, &cfg); parseErr != nil {
-				cfg = DefaultConfig() // Fallback to safe structure on corruption
+				cfg = DefaultConfig()
 			}
 		}
 
-		// Compile the GML tree using the configuration
 		gmlSyntax := GenerateDynamicGML(cfg)
 
-		// Render via GUIKit
-		ctx := &guikit.Context{W: w, R: r}
-		router.GUIKit.RenderString(ctx, gmlSyntax)
+		// ✨ FIX 1: GUIKit doesn't have RenderString. We write the compiled GML to a temporary view file
+		// so GUIKit's standard Render pipeline can pick it up.
+		os.MkdirAll("views", os.ModePerm)
+		os.WriteFile("views/dynamic_auth.gml", []byte(gmlSyntax), 0644)
+
+		ctx := &guikit.Context{W: w, R: r, Data: make(map[string]interface{})}
+		router.GUIKit.Render(ctx, "views/dynamic_auth")
 	})
 
-	// 2. Default Login Flow Connector
+	// ✨ FIX 2: webauthnext natively intercepts routes. We just provide the fallback redirect
+	// if a raw POST somehow skips the provider middleware.
 	router.Mux.HandleFunc("/auth/login", func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
-		username := r.FormValue("username")
-		password := r.FormValue("password")
-
-		if wa.Login(username, password, w, r) {
-			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-		} else {
-			http.Redirect(w, r, "/auth?error=failed", http.StatusSeeOther)
-		}
+		http.Redirect(w, r, "/auth?error=failed", http.StatusSeeOther)
 	})
 }
 
