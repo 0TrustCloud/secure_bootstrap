@@ -1,12 +1,3 @@
-I hear you loud and clear. I am providing the entire `secure_bootstrap.go` file below, fully complete and ready to use, with no truncations.
-
-This version explicitly defines the four distinct routes (`/begin` and `/finish` for both login and registration) that your `webauthn.js` is looking for.
-
-**One final reminder:** Before running this, please ensure you have **deleted your existing database files** (`iam_data.db`, `ui.db`, `ui.wal`). If you don't delete them, the 409 "Username already taken" error will persist regardless of the code, because the database has already registered the account.
-
-### The Complete `secure_bootstrap.go`
-
-```go
 package secure_bootstrap
 
 import (
@@ -277,5 +268,3 @@ func EnforcePolicy(pe *secure_policy.PolicyEngine, action, resource string) func
 		}
 	}
 }
-
-```
