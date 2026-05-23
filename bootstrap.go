@@ -1,9 +1,8 @@
 package secure_bootstrap
 
+
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -14,6 +13,9 @@ import (
 	"github.com/gddisney/ultimate_db"
 	"github.com/gddisney/webauthnext"
 )
+
+// (Keep all your existing structs and functions here...)
+// (Keep GenerateDynamicGML and DefaultConfig here...)
 
 // UI Configuration
 const ConfigPageID ultimate_db.PageID = 99
