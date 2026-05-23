@@ -3,6 +3,7 @@ package secure_bootstrap
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -18,7 +19,6 @@ const (
 	ConfigPageID ultimate_db.PageID = 99
 )
 
-// UIConfig represents the dynamic layout settings.
 type UIConfig struct {
 	BrandName    string     `json:"brand_name"`
 	Logo         string     `json:"logo"`
@@ -42,7 +42,6 @@ type UIButton struct {
 	OnClick string `json:"onclick"`
 }
 
-// DefaultConfig provides the base authentication UI state.
 func DefaultConfig() UIConfig {
 	return UIConfig{
 		BrandName:    "Secure Bootstrap SSO",
@@ -59,7 +58,6 @@ func DefaultConfig() UIConfig {
 	}
 }
 
-// GenerateDynamicGML builds the GML syntax string.
 func GenerateDynamicGML(cfg UIConfig) string {
 	var sb strings.Builder
 
@@ -117,7 +115,6 @@ func GenerateDynamicGML(cfg UIConfig) string {
 	return sb.String()
 }
 
-// loginInterceptor embeds ResponseWriter anonymously to allow overriding methods.
 type loginInterceptor struct {
 	http.ResponseWriter
 	status   int
@@ -148,7 +145,6 @@ func (i *loginInterceptor) Write(b []byte) (int, error) {
 	return i.ResponseWriter.Write(b)
 }
 
-// BootstrapAuth initializes the authentication routes.
 func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, meshNode *secure_network.MeshNode, gatewayAddr string) {
 	router.Mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
 		txn := router.DB.BeginTxn()
@@ -160,54 +156,58 @@ func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, mesh
 			json.Unmarshal(cfgBytes, &cfg)
 		}
 
-		// Optimization: Render directly from memory rather than writing to disk.
-		// If guikit requires a file path, consider caching the result in memory
-		// or using a sync.Once structure for the template generation.
 		gmlSyntax := GenerateDynamicGML(cfg)
-		
 		ctx := &guikit.Context{
-			W:    w, 
-			R:    r, 
+			W:    w,
+			R:    r,
 			Data: map[string]interface{}{"DynamicGML": gmlSyntax},
 		}
-		
-		// Note: Ensure your implementation of guikit.Render can process
-		// dynamic content or a raw GML string provided in the context.
 		router.GUIKit.Render(ctx, "views/dynamic_auth")
 	})
 
-	// JS Registration Flow
+	logReq := func(action, username string) {
+		log.Printf("[AUTH] Action: %s, Username: %s", action, username)
+	}
+
 	router.Mux.HandleFunc("/auth/register/begin", func(w http.ResponseWriter, r *http.Request) {
+		username := r.URL.Query().Get("username")
+		logReq("RegisterBegin", username)
 		wa.BeginRegistration(w, r)
 	})
 
 	router.Mux.HandleFunc("/auth/register/finish", func(w http.ResponseWriter, r *http.Request) {
 		username := r.URL.Query().Get("username")
+		logReq("RegisterFinish", username)
 		interceptor := &loginInterceptor{ResponseWriter: w, username: username}
 		wa.FinishRegistration(interceptor, r)
 
-		if interceptor.status == http.StatusOK && meshNode != nil {
+		if interceptor.status != http.StatusOK {
+			log.Printf("[AUTH] RegisterFinish failed for %s with status %d", username, interceptor.status)
+		} else if meshNode != nil {
 			go func() { meshNode.Connect(gatewayAddr) }()
 		}
 	})
 
-	// JS Login Flow
 	router.Mux.HandleFunc("/auth/login/begin", func(w http.ResponseWriter, r *http.Request) {
+		username := r.URL.Query().Get("username")
+		logReq("LoginBegin", username)
 		wa.BeginLogin(w, r)
 	})
 
 	router.Mux.HandleFunc("/auth/login/finish", func(w http.ResponseWriter, r *http.Request) {
 		username := r.URL.Query().Get("username")
+		logReq("LoginFinish", username)
 		interceptor := &loginInterceptor{ResponseWriter: w, username: username}
 		wa.FinishLogin(interceptor, r)
 
-		if interceptor.status == http.StatusOK && meshNode != nil {
+		if interceptor.status != http.StatusOK {
+			log.Printf("[AUTH] LoginFinish failed for %s with status %d", username, interceptor.status)
+		} else if meshNode != nil {
 			go func() { meshNode.Connect(gatewayAddr) }()
 		}
 	})
 }
 
-// RequireAuth middleware ensures the session_id is valid.
 func RequireAuth(router *secure_network.Router, next func(c *guikit.Context)) func(c *guikit.Context) {
 	return func(c *guikit.Context) {
 		cookie, err := c.R.Cookie("session_id")
@@ -228,7 +228,6 @@ func RequireAuth(router *secure_network.Router, next func(c *guikit.Context)) fu
 	}
 }
 
-// RequirePolicy checks access permissions for a specific action/resource.
 func RequirePolicy(pe *secure_policy.PolicyEngine, action, resource string, next func(c *guikit.Context)) func(c *guikit.Context) {
 	return func(c *guikit.Context) {
 		cookie, err := c.R.Cookie("session_id")
@@ -249,7 +248,6 @@ func RequirePolicy(pe *secure_policy.PolicyEngine, action, resource string, next
 	}
 }
 
-// HandleLogout clears session cookies and redirects.
 func HandleLogout(c *guikit.Context) {
 	http.SetCookie(c.W, &http.Cookie{
 		Name:     "session_id",
@@ -263,7 +261,6 @@ func HandleLogout(c *guikit.Context) {
 	http.Redirect(c.W, c.R, "/auth", http.StatusSeeOther)
 }
 
-// EnforcePolicy standard HTTP middleware version of RequirePolicy.
 func EnforcePolicy(pe *secure_policy.PolicyEngine, action, resource string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
