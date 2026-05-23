@@ -60,7 +60,6 @@ func DefaultConfig() UIConfig {
 
 func GenerateDynamicGML(cfg UIConfig) string {
 	var sb strings.Builder
-
 	sb.WriteString(fmt.Sprintf(`html(
     head(
         meta:charset."utf-8"(),
@@ -104,14 +103,7 @@ func GenerateDynamicGML(cfg UIConfig) string {
 		sb.WriteString(fmt.Sprintf("\n                    button%s:type.\"%s\"%s(\"%s\"),",
 			btnClass, btn.Type, onclickStr, btn.Label))
 	}
-
-	sb.WriteString(`
-                )
-            )
-        )
-    )
-)`)
-
+	sb.WriteString(`))))`)
 	return sb.String()
 }
 
@@ -145,17 +137,26 @@ func (i *loginInterceptor) Write(b []byte) (int, error) {
 	return i.ResponseWriter.Write(b)
 }
 
+func provisionUser(db *ultimate_db.DB, username string) {
+	txn := db.BeginTxn()
+	key := []byte("usr:" + username)
+	exists, _ := db.Read(AuthPageID, txn, key)
+	if len(exists) == 0 {
+		log.Printf("[AUTH] Provisioning identity for: %s", username)
+		db.Write(AuthPageID, txn, key, []byte(`{"id":"`+username+`"}`), 0)
+	}
+	db.CommitTxn(txn)
+}
+
 func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, meshNode *secure_network.MeshNode, gatewayAddr string) {
 	router.Mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
 		txn := router.DB.BeginTxn()
 		cfgBytes, err := router.DB.Read(ConfigPageID, txn, []byte("ui_settings"))
 		router.DB.CommitTxn(txn)
-
 		cfg := DefaultConfig()
 		if err == nil && len(cfgBytes) > 0 {
 			json.Unmarshal(cfgBytes, &cfg)
 		}
-
 		gmlSyntax := GenerateDynamicGML(cfg)
 		ctx := &guikit.Context{
 			W:    w,
@@ -165,45 +166,30 @@ func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, mesh
 		router.GUIKit.Render(ctx, "views/dynamic_auth")
 	})
 
-	logReq := func(action, username string) {
-		log.Printf("[AUTH] Action: %s, Username: %s", action, username)
-	}
-
 	router.Mux.HandleFunc("/auth/register/begin", func(w http.ResponseWriter, r *http.Request) {
-		username := r.URL.Query().Get("username")
-		logReq("RegisterBegin", username)
 		wa.BeginRegistration(w, r)
 	})
 
 	router.Mux.HandleFunc("/auth/register/finish", func(w http.ResponseWriter, r *http.Request) {
 		username := r.URL.Query().Get("username")
-		logReq("RegisterFinish", username)
+		provisionUser(router.DB, username)
 		interceptor := &loginInterceptor{ResponseWriter: w, username: username}
 		wa.FinishRegistration(interceptor, r)
-
-		if interceptor.status != http.StatusOK {
-			log.Printf("[AUTH] RegisterFinish failed for %s with status %d", username, interceptor.status)
-		} else if meshNode != nil {
-			go func() { meshNode.Connect(gatewayAddr) }()
+		if interceptor.status == http.StatusOK && meshNode != nil {
+			go meshNode.Connect(gatewayAddr)
 		}
 	})
 
 	router.Mux.HandleFunc("/auth/login/begin", func(w http.ResponseWriter, r *http.Request) {
-		username := r.URL.Query().Get("username")
-		logReq("LoginBegin", username)
 		wa.BeginLogin(w, r)
 	})
 
 	router.Mux.HandleFunc("/auth/login/finish", func(w http.ResponseWriter, r *http.Request) {
 		username := r.URL.Query().Get("username")
-		logReq("LoginFinish", username)
 		interceptor := &loginInterceptor{ResponseWriter: w, username: username}
 		wa.FinishLogin(interceptor, r)
-
-		if interceptor.status != http.StatusOK {
-			log.Printf("[AUTH] LoginFinish failed for %s with status %d", username, interceptor.status)
-		} else if meshNode != nil {
-			go func() { meshNode.Connect(gatewayAddr) }()
+		if interceptor.status == http.StatusOK && meshNode != nil {
+			go meshNode.Connect(gatewayAddr)
 		}
 	})
 }
@@ -215,14 +201,12 @@ func RequireAuth(router *secure_network.Router, next func(c *guikit.Context)) fu
 			http.Redirect(c.W, c.R, "/auth", http.StatusSeeOther)
 			return
 		}
-
 		user := strings.TrimPrefix(cookie.Value, "user_session_")
 		if user == "" || user == cookie.Value {
 			http.SetCookie(c.W, &http.Cookie{Name: "session_id", MaxAge: -1, Path: "/"})
 			http.Redirect(c.W, c.R, "/auth", http.StatusSeeOther)
 			return
 		}
-
 		c.Data["CurrentUser"] = user
 		next(c)
 	}
@@ -235,14 +219,12 @@ func RequirePolicy(pe *secure_policy.PolicyEngine, action, resource string, next
 			http.Redirect(c.W, c.R, "/auth", http.StatusSeeOther)
 			return
 		}
-
 		user := strings.TrimPrefix(cookie.Value, "user_session_")
 		if user == "" || !pe.Evaluate([]byte(user), action, resource, nil) {
 			c.W.WriteHeader(http.StatusForbidden)
 			c.W.Write([]byte("403 Forbidden: Missing required class or permissions."))
 			return
 		}
-
 		c.Data["CurrentUser"] = user
 		next(c)
 	}
