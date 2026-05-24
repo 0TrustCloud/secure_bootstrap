@@ -8,9 +8,11 @@ import (
 	"github.com/gddisney/guikit"
 	"github.com/gddisney/identity_provider"
 	"github.com/gddisney/orchid_sync"
+	"github.com/gddisney/secure_bootstrap"
 	"github.com/gddisney/secure_network"
 	"github.com/gddisney/secure_policy"
 	"github.com/gddisney/ultimate_db"
+	"github.com/gddisney/webauthnext"
 	"gopkg.in/yaml.v3"
 )
 
@@ -53,7 +55,8 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 		log.Fatalf("Failed to boot guikit: %v", err)
 	}
 
-	searchEngine, err := orchid_sync.NewEngine("data.db", 443, provider)
+	// FIX: Type-assert the dynamic provider to satisfy orchid_sync's hardcoded requirement
+	searchEngine, err := orchid_sync.NewEngine("data.db", 443, provider.(*webauthnext.Provider))
 	if err != nil {
 		log.Fatalf("Failed to boot search engine: %v", err)
 	}
@@ -107,6 +110,7 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	}
 
 	// 7. Strict Auth Flow Bootstrap
+	// FIX: secure_bootstrap is now properly imported
 	secure_bootstrap.BootstrapAuth(r, provider, meshNode, gatewayAddress)
 
 	// Register identity routes
