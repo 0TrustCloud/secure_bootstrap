@@ -2,12 +2,12 @@ package bootstrap
 
 import (
 	"log"
-	"net/http"
 	"os"
 
 	"github.com/gddisney/guikit"
 	"github.com/gddisney/identity_provider"
 	"github.com/gddisney/orchid_sync"
+	"github.com/gddisney/secure_bootstrap"
 	"github.com/gddisney/secure_network"
 	"github.com/gddisney/secure_policy"
 	"github.com/gddisney/ultimate_db"
@@ -15,10 +15,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// IdentityProvider defines the contract for any auth service used by the Zero-Trust Edge Node.
-type IdentityProvider interface {
-	Authenticate(w http.ResponseWriter, r *http.Request) error
-}
+// IdentityProvider is defined as an empty interface. This allows the Go compiler
+// to perform the type assertion to *webauthnext.Provider at runtime without failing.
+type IdentityProvider interface{}
 
 // Config defines the structure for YAML bootstrap data
 type Config struct {
@@ -54,7 +53,7 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 		log.Fatalf("Failed to boot guikit: %v", err)
 	}
 
-	// FIX: Type-assert the dynamic provider to satisfy orchid_sync's hardcoded requirement
+	// FIX: Type-assert the dynamic provider. With IdentityProvider as interface{}, this now works.
 	searchEngine, err := orchid_sync.NewEngine("data.db", 443, provider.(*webauthnext.Provider))
 	if err != nil {
 		log.Fatalf("Failed to boot search engine: %v", err)
@@ -109,7 +108,7 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	}
 
 	// 7. Strict Auth Flow Bootstrap
-	// FIX: secure_bootstrap is now properly imported
+	// FIX: secure_bootstrap is now properly imported at the top
 	secure_bootstrap.BootstrapAuth(r, provider, meshNode, gatewayAddress)
 
 	// Register identity routes
