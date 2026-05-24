@@ -1,4 +1,4 @@
-package bootstrap
+package secure_bootstrap
 
 import (
 	"log"
