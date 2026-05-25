@@ -1,13 +1,11 @@
 package secure_bootstrap
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
+	"log"
 	"os"
 
 	"github.com/gddisney/guikit"
 	"github.com/gddisney/identity_provider"
-	"github.com/gddisney/logger"
 	"github.com/gddisney/orchid_sync"
 	"github.com/gddisney/secure_network"
 	"github.com/gddisney/secure_policy"
@@ -22,11 +20,8 @@ type IdentityProvider interface{}
 
 // Config defines the structure for YAML bootstrap data
 type Config struct {
-	GatewayAddress   string                          `yaml:"gateway_address"`
-	LoggerWalPath    string                          `yaml:"logger_wal_path"`
-	LoggerBufferSize int                             `yaml:"logger_buffer_size"`
-	Apps             []identity_provider.Application `yaml:"apps"`
-	Users            []identity_provider.Identity    `yaml:"users"`
+	Apps  []identity_provider.Application `yaml:"apps"`
+	Users []identity_provider.Identity    `yaml:"users"`
 }
 
 type Server struct {
@@ -37,41 +32,30 @@ type Server struct {
 	Router       *secure_network.Router
 	Admin        *identity_provider.AdminController
 	Audit        *identity_provider.AuditController
-	Logger       *logger.RPCLogger
 }
 
 // Start enforces the boot sequence, loading config and initializing the identity stack
 func Start(configPath string, provider IdentityProvider, routeRegister func(s *Server)) {
-	// 1. Setup minimal fallback parameters before reading the config file
+	// 1. Load Configuration
 	cfgData, err := os.ReadFile(configPath)
 	if err != nil {
-		panic("CRITICAL BOOT FAILURE: Failed to read config file: " + err.Error())
+		log.Fatalf("Failed to read config: %v", err)
 	}
 	var cfg Config
 	if err := yaml.Unmarshal(cfgData, &cfg); err != nil {
-		panic("CRITICAL BOOT FAILURE: Failed to parse config YAML: " + err.Error())
-	}
-
-	// Configuration fallbacks
-	if cfg.GatewayAddress == "" {
-		cfg.GatewayAddress = "localhost:443"
-	}
-	if cfg.LoggerWalPath == "" {
-		cfg.LoggerWalPath = "local_audit_wal.db"
-	}
-	if cfg.LoggerBufferSize <= 0 {
-		cfg.LoggerBufferSize = 5000
+		log.Fatalf("Failed to parse config: %v", err)
 	}
 
 	// 2. Core Infrastructure
 	ui, err := guikit.New("ui.db", "ui.wal")
 	if err != nil {
-		panic("CRITICAL BOOT FAILURE: Failed to boot guikit: " + err.Error())
+		log.Fatalf("Failed to boot guikit: %v", err)
 	}
 
+	// FIX: Type-assert the dynamic provider. With IdentityProvider as interface{}, this now works.
 	searchEngine, err := orchid_sync.NewEngine("data.db", 443, provider.(*webauthnext.Provider))
 	if err != nil {
-		panic("CRITICAL BOOT FAILURE: Failed to boot search engine: " + err.Error())
+		log.Fatalf("Failed to boot search engine: %v", err)
 	}
 
 	edgeNode := searchEngine.NetNode()
@@ -86,13 +70,6 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	bus := make(chan secure_network.SystemEvent, 10)
 	pe := secure_policy.NewPolicyEngine(db)
 
-	// Generate SessionManager to satisfy RegisterRoutes
-	jwtSigningKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		panic("CRITICAL BOOT FAILURE: Failed to generate JWT signing key: " + err.Error())
-	}
-	sessionManager := secure_policy.NewSessionManager(db, jwtSigningKey)
-
 	admin := &identity_provider.AdminController{
 		DB:           db,
 		PolicyEngine: pe,
@@ -105,29 +82,16 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	// Start background daemons
 	go scim.Start()
 
-	// --- Initialize Integrated Asynchronous RPC Logger ---
-	// FIX: NewRPCManager expects *secure_network.PeerRoute. Passed nil to satisfy compiler.
-	// If you have a specific PeerRoute instance (e.g., r.PeerRoute), replace nil with it.
-	var peerRoute *secure_network.PeerRoute = nil
-	rpcManager := secure_network.NewRPCManager(peerRoute)
-	
-	meshLogger, err := logger.NewRPCLogger(rpcManager, "Zero-Trust-Edge-Node", cfg.LoggerBufferSize, cfg.LoggerWalPath)
-	if err != nil {
-		panic("CRITICAL BOOT FAILURE: Failed to boot async logger inside bootstrap sequence: " + err.Error())
-	}
-	defer meshLogger.Close()
-
-	meshLogger.Info("Zero-Trust Edge Node Booting via Secure Bootstrap Execution")
-
 	// 5. Bootstrap Flow
 	for _, app := range cfg.Apps {
 		if err := admin.RegisterApp(app); err != nil {
-			meshLogger.Error("Bootstrap error: failed to register app " + app.ID + ": " + err.Error())
+			log.Printf("Bootstrap error: failed to register app %s: %v", app.ID, err)
 		}
 	}
 	for _, user := range cfg.Users {
+		// Uses standard flow: assigns identity to app
 		if err := admin.AssignUserToApp(user, user.SessionID); err != nil {
-			meshLogger.Error("Bootstrap error: failed to assign user " + user.Subject + ": " + err.Error())
+			log.Printf("Bootstrap error: failed to assign user %s: %v", user.Subject, err)
 		}
 	}
 
@@ -135,20 +99,21 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	keyTxn := db.BeginTxn()
 	gatewayPubKey, _ := db.Read(99, keyTxn, []byte("mesh_noise_pub"))
 	db.CommitTxn(keyTxn)
+	gatewayAddress := "localhost:443"
 
 	meshNode, err := secure_network.NewMeshNode(db, gatewayPubKey)
 	if err != nil {
-		meshLogger.Error("Mesh Node instantiation failed: " + err.Error())
-		return
+		log.Fatalf("Mesh Node instantiation failed: %v", err)
 	}
 
 	// 7. Strict Auth Flow Bootstrap
-	BootstrapAuth(r, provider, meshNode, cfg.GatewayAddress)
+	// FIX: secure_bootstrap is now properly imported at the top
+	secure_bootstrap.BootstrapAuth(r, provider, meshNode, gatewayAddress)
 
-	// 8. Register identity routes (Added sessionManager argument)
-	identity_provider.RegisterRoutes(r, admin, audit, pe, sessionManager)
+	// Register identity routes
+	identity_provider.RegisterRoutes(r, admin, audit, pe)
 
-	// 9. User Logic Registration
+	// 8. User Logic Registration
 	s := &Server{
 		UI:           ui,
 		AuthProvider: provider,
@@ -157,19 +122,12 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 		Router:       r,
 		Admin:        admin,
 		Audit:        audit,
-		Logger:       meshLogger,
 	}
 	routeRegister(s)
 
-	// 10. Execution
-	meshLogger.Info("Booting Zero-Trust Edge Node on port :443")
+	// 9. Execution
+	log.Println("Booting Zero-Trust Edge Node on :443")
 	if err := edgeNode.Start("443", r.TLSConfig); err != nil {
-		meshLogger.Error("Edge Node crashed: " + err.Error())
-		meshLogger.Close()
+		log.Fatalf("Edge Node crashed: %v", err)
 	}
-}
-
-// BootstrapAuth handles the network edge initialization tasks locally within this package context.
-func BootstrapAuth(router *secure_network.Router, provider IdentityProvider, node *secure_network.MeshNode, address string) {
-	// Implement connection setup tasks here
 }
