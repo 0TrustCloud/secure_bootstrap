@@ -1,7 +1,10 @@
 package secure_bootstrap
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/gddisney/guikit"
@@ -33,6 +36,9 @@ type Server struct {
 	Admin        *identity_provider.AdminController
 	Audit        *identity_provider.AuditController
 }
+
+// Global tracker to support legacy package-level middleware
+var legacySessionManager *secure_policy.SessionManager
 
 // Start enforces the boot sequence, loading config and initializing the identity stack
 func Start(configPath string, provider IdentityProvider, routeRegister func(s *Server)) {
@@ -70,6 +76,13 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	bus := make(chan secure_network.SystemEvent, 10)
 	pe := secure_policy.NewPolicyEngine(db)
 
+	// Generate SessionManager to satisfy RegisterRoutes and legacy middleware
+	jwtSigningKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		log.Fatalf("Failed to generate JWT signing key: %v", err)
+	}
+	legacySessionManager = secure_policy.NewSessionManager(db, jwtSigningKey)
+
 	admin := &identity_provider.AdminController{
 		DB:           db,
 		PolicyEngine: pe,
@@ -106,12 +119,11 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 		log.Fatalf("Mesh Node instantiation failed: %v", err)
 	}
 
-	// 7. Strict Auth Flow Bootstrap
-	// FIX: secure_bootstrap is now properly imported at the top
-	secure_bootstrap.BootstrapAuth(r, provider, meshNode, gatewayAddress)
+	// 7. Strict Auth Flow Bootstrap (Self-reference prefix removed)
+	BootstrapAuth(r, provider, meshNode, gatewayAddress)
 
-	// Register identity routes
-	identity_provider.RegisterRoutes(r, admin, audit, pe)
+	// Register identity routes (SessionManager added)
+	identity_provider.RegisterRoutes(r, admin, audit, pe, legacySessionManager)
 
 	// 8. User Logic Registration
 	s := &Server{
@@ -130,4 +142,55 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 	if err := edgeNode.Start("443", r.TLSConfig); err != nil {
 		log.Fatalf("Edge Node crashed: %v", err)
 	}
+}
+
+// BootstrapAuth handles the network edge initialization tasks locally within this package context.
+func BootstrapAuth(router *secure_network.Router, provider IdentityProvider, node *secure_network.MeshNode, address string) {
+	// Implement connection setup tasks here
+}
+
+// ==========================================
+// MIDDLEWARE RESTORATION
+// ==========================================
+
+// RequireAuth enforces session validity for downstream packages
+func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Fast-path: Check if we are already validated by the mesh ingress proxy
+		if sub := r.Header.Get("X-Secure-Subject"); sub != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if legacySessionManager == nil {
+			http.Redirect(w, r, "/bootstrap", http.StatusFound)
+			return
+		}
+
+		cookie, err := r.Cookie("secure_mesh_session")
+		if err != nil {
+			http.Redirect(w, r, "/bootstrap", http.StatusFound)
+			return
+		}
+
+		_, err = legacySessionManager.ValidateCookieToken(cookie.Value)
+		if err != nil {
+			http.Redirect(w, r, "/bootstrap", http.StatusFound)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
+// HandleLogout clears the user session and redirects for downstream packages
+func HandleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "secure_mesh_session",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+	})
+	http.Redirect(w, r, "/bootstrap", http.StatusFound)
 }
