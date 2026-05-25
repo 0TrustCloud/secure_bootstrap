@@ -108,7 +108,7 @@ func Start(configPath string, provider IdentityProvider, routeRegister func(s *S
 
 	// 7. Strict Auth Flow Bootstrap
 	// FIX: secure_bootstrap is now properly imported at the top
-	secure_bootstrap.BootstrapAuth(r, provider, meshNode, gatewayAddress)
+	BootstrapAuth(r, provider, meshNode, gatewayAddress)
 
 	// Register identity routes
 	identity_provider.RegisterRoutes(r, admin, audit, pe)
