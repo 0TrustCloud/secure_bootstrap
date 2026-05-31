@@ -12,7 +12,7 @@ import (
 	"github.com/0TrustCloud/logger"
 	"github.com/0TrustCloud/secure_network"
 	"github.com/0TrustCloud/ultimate_db"
-	"github.com/0TrustCloud/webauthnext"
+	"github.com/0TrustCloud/auth_provider"
 )
 
 const (
