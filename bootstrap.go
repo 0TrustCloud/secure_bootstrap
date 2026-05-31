@@ -12,7 +12,7 @@ import (
 	"github.com/0TrustCloud/logger"
 	"github.com/0TrustCloud/secure_network"
 	"github.com/0TrustCloud/ultimate_db"
-	webauthnext "github.com/0TrustCloud/auth_provider"
+	webauthnext "github.com/0TrustCloud/auth_provider" // Fixed: Named import alias fixes the undefined package identifier
 )
 
 const (
@@ -146,13 +146,13 @@ func (i *loginInterceptor) Write(b []byte) (int, error) {
 	return i.ResponseWriter.Write(b)
 }
 
-// BootstrapAuth configures the HTTP endpoint mappings backed by the 0TrustCloud networking core
-func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, meshNode *secure_network.MeshNode, gatewayAddr string, sysLog *logger.LogDispatcher) {
+// BootstrapAuth configures endpoint mappings; updated to take an explicit db handle
+func BootstrapAuth(router *secure_network.Router, db *ultimate_db.DB, wa *webauthnext.Provider, meshNode *secure_network.MeshNode, gatewayAddr string, sysLog *logger.LogDispatcher) {
 	router.Mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
-		// Aligned with ultimate_db's precise transactional and page signature requirements
-		txn := router.DB.BeginTxn()
-		cfgBytes, err := router.DB.Read(ConfigPageID, txn, []byte("ui_settings"))
-		router.DB.CommitTxn(txn)
+		// Fixed: Interacts with the db engine directly rather than the undefined property on the router
+		txn := db.BeginTxn()
+		cfgBytes, err := db.Read(ConfigPageID, txn, []byte("ui_settings"))
+		db.CommitTxn(txn)
 
 		cfg := DefaultConfig()
 		if err == nil && len(cfgBytes) > 0 {
@@ -186,11 +186,11 @@ func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, mesh
 
 		if interceptor.status == http.StatusOK {
 			if sysLog != nil {
-				sysLog.MakeAudit(username, "AUTH_SUCCESS", "Passkey verified. Initializing secure overlay tunnel.")
+				// Fixed: Corrected method name invocation to match your defined Logger interface
+				sysLog.Audit(username, "AUTH_SUCCESS", "Passkey verified. Initializing secure overlay tunnel.")
 			}
 
 			go func() {
-				// context.Background() handles async background connections that outlive the parent HTTP lifespan safely
 				if err := meshNode.Connect(context.Background(), gatewayAddr); err != nil {
 					if sysLog != nil {
 						sysLog.Error(fmt.Sprintf("DBSC Auto-Connect Failed for user %s: %v", username, err))
@@ -203,7 +203,8 @@ func BootstrapAuth(router *secure_network.Router, wa *webauthnext.Provider, mesh
 			}()
 		} else {
 			if sysLog != nil {
-				sysLog.MakeAudit(username, "AUTH_FAILED", "Passkey verification failed or was rejected")
+				// Fixed: Corrected method name invocation here as well
+				sysLog.Audit(username, "AUTH_FAILED", "Passkey verification failed or was rejected")
 			}
 		}
 	})
